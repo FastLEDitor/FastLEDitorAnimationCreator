@@ -61,7 +61,8 @@ function AnimationCreator() {
       writerRef.current = writer;
 
       const data = {
-        message: serializeAnimation()
+        command: "addAnimation",
+        arguments: [serializeAnimation()]
       };
 
       const json = JSON.stringify(data);
