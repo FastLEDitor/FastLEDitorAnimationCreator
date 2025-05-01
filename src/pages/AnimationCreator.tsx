@@ -4,6 +4,7 @@ import PixelMatrix from "../components/PixelMatrix";
 import ControlPanel from "../components/ControlPanel";
 import FramePreview from "../components/FramePreview";
 import TitleBar from "../components/TitleBar";
+import ChooseImportedAnimationModal from "../components/ChooseImportedAnimationModal";
 
 export type Color = {
   r: number;
@@ -48,8 +49,13 @@ function AnimationCreator() {
   const [copiedFrame, setCopiedFrame] = useState<Frame | null>(null);
   const [title, setTitle] = useState("");
   const [hasTitleError, setHasTitleError] = useState(false);
+  const [importedAnimationNames, setImportedAnimationsNames] = useState<string[]>([]);
+  const [isAnimationModalOpen, setIsAnimationModalOpen] = useState(false);
 
-  async function connectToEsp32() {
+  async function exportToEsp() {
+    setHasTitleError(title.length === 0);
+    if (hasTitleError) return;
+
     try {
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
@@ -81,24 +87,97 @@ function AnimationCreator() {
           break;
         }
         receivedData += value;
-        if (receivedData.includes("\n")){
+        if (receivedData.includes("\n")) {
           await reader.cancel();
         }
       }
-      console.log(receivedData);
 
-      
       await writer.close();
-      await writableStreamClosed.catch(() => {});
-      
+      await writableStreamClosed.catch(() => { });
+
       await reader.releaseLock();
-      await readableStreamClosed.catch(() => {}); // wait for pipeTo to close
+      await readableStreamClosed.catch(() => { }); // wait for pipeTo to close
 
       await port.close();
-      console.log("Connected to ESP32");
     } catch (err) {
       console.error("Connection error: ", err);
     }
+  }
+
+  async function getAnimationsNames() {
+    try {
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+
+      const textEncoder = new TextEncoderStream();
+      const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+      const writer = textEncoder.writable.getWriter();
+      portRef.current = port;
+      writerRef.current = writer;
+
+      const data = {
+        command: "getAnimationsNames",
+        arguments: []
+      };
+
+      const json = JSON.stringify(data);
+
+      await writerRef.current.write(json + "\n");
+
+      const textDecoder = new TextDecoderStream();
+      const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+      const reader = textDecoder.readable.getReader();
+
+      let receivedData = "";
+      let isCapturing = false;
+      let finalData = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          reader.releaseLock();
+          break;
+        }
+
+        receivedData += value;
+
+        // Check for START
+        if (receivedData.includes("<<START>>")) {
+          isCapturing = true;
+          receivedData = receivedData.substring(receivedData.indexOf("<<START>>") + 9); // skip the marker
+        }
+
+        // Capture data
+        if (isCapturing) {
+          // If END is reached, stop capturing
+          if (receivedData.includes("<<END>>")) {
+            finalData = receivedData.substring(0, receivedData.indexOf("<<END>>"));
+            reader.cancel()
+            break;
+          }
+        }
+      }
+
+      console.log("Received data: " + receivedData);
+      setImportedAnimationsNames(JSON.parse(finalData));
+
+      await writer.close();
+      await writableStreamClosed.catch(() => { });
+
+      await reader.releaseLock();
+      await readableStreamClosed.catch(() => { }); // wait for pipeTo to close
+
+      await port.close();
+    } catch (err) {
+      console.error("Connection error: ", err);
+    }
+  }
+
+  async function handleChangeIsModalOpen(isOpen: boolean) {
+    if (isOpen) {
+      await getAnimationsNames();
+    }
+    setIsAnimationModalOpen(isOpen);
   }
 
   function handleNewFrame() {
@@ -279,6 +358,75 @@ function AnimationCreator() {
     console.log(json);
   }
 
+  async function importJsonAnimationFromEsp(name: string) {
+    try {
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+
+      const textEncoder = new TextEncoderStream();
+      const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+      const writer = textEncoder.writable.getWriter();
+      portRef.current = port;
+      writerRef.current = writer;
+
+      const data = {
+        command: "getAnimation",
+        arguments: [name]
+      };
+
+      const json = JSON.stringify(data);
+
+      await writerRef.current.write(json + "\n");
+
+      const textDecoder = new TextDecoderStream();
+      const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+      const reader = textDecoder.readable.getReader();
+
+      let receivedData = "";
+      let isCapturing = false;
+      let finalData = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          reader.releaseLock();
+          break;
+        }
+
+        receivedData += value;
+
+        // Check for START
+        if (receivedData.includes("<<START>>")) {
+          isCapturing = true;
+          receivedData = receivedData.substring(receivedData.indexOf("<<START>>") + 9); // skip the marker
+        }
+
+        // Capture data
+        if (isCapturing) {
+          // If END is reached, stop capturing
+          if (receivedData.includes("<<END>>")) {
+            finalData = receivedData.substring(0, receivedData.indexOf("<<END>>"));
+            reader.cancel()
+            break;
+          }
+        }
+      }
+      
+      const animationObj = JSON.parse(finalData);
+      importJson(animationObj.name, animationObj.frames);
+
+      await writer.close();
+      await writableStreamClosed.catch(() => { });
+
+      await reader.releaseLock();
+      await readableStreamClosed.catch(() => { }); // wait for pipeTo to close
+
+      await port.close();
+    } catch (err) {
+      console.error("Connection error: ", err);
+    }
+  }
+
   function resetMatrix() {
     setFrames((prevFrames) => {
       return prevFrames.map((frame, index) => {
@@ -335,9 +483,17 @@ function AnimationCreator() {
             numFrames={frames.length}
             exportJson={exportJson}
             importJson={importJson}
-            connectEsp={connectToEsp32}
+            exportToEsp={exportToEsp}
+            setIsModalOpen={() => handleChangeIsModalOpen(true)}
           />
         </div>
+        {isAnimationModalOpen && (
+          <ChooseImportedAnimationModal
+            options={importedAnimationNames}
+            onSelect={importJsonAnimationFromEsp}
+            onClose={() => setIsAnimationModalOpen(false)}
+          />
+        )}
         <div>
           <TitleBar title={title} setTitle={handleTitleChange} hasError={hasTitleError} />
           {frames.length > 0 && (
