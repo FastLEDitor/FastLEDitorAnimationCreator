@@ -75,28 +75,8 @@ function AnimationCreator() {
 
       await writerRef.current.write(json + "\n");
 
-      const textDecoder = new TextDecoderStream();
-      const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
-      const reader = textDecoder.readable.getReader();
-
-      let receivedData = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) {
-          reader.releaseLock();
-          break;
-        }
-        receivedData += value;
-        if (receivedData.includes("\n")) {
-          await reader.cancel();
-        }
-      }
-
       await writer.close();
       await writableStreamClosed.catch(() => { });
-
-      await reader.releaseLock();
-      await readableStreamClosed.catch(() => { }); // wait for pipeTo to close
 
       await port.close();
     } catch (err) {
