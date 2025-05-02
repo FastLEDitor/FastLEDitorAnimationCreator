@@ -15,7 +15,8 @@ interface ControlPanelProps {
   pasteFrame: () => void;
   exportJson: () => void;
   importJson: (title: string, data: RawFrame[]) => void;
-  connectEsp: () => void;
+  setIsModalOpen: (isOpen: boolean) => void;
+  exportToEsp: () => void;
   numFrames: number;
 }
 
@@ -148,11 +149,20 @@ function ControlPanel(props: ControlPanelProps) {
         Export JSON
       </button>
 
+      <hr className="h-px border-slate-500 my-1" />
+
       <button
         className="bg-slate-400 py-2 w-32 rounded-md my-2"
-        onClick={props.connectEsp}
+        onClick={() => props.setIsModalOpen(true)}
       >
-        Connect ESP
+        Import from ESP32
+      </button>
+
+      <button
+        className="bg-slate-400 py-2 w-32 rounded-md my-2"
+        onClick={props.exportToEsp}
+      >
+        Export to ESP32
       </button>
     </div>
 
