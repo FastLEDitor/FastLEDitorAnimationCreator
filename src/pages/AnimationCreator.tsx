@@ -60,28 +60,81 @@ function AnimationCreator() {
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
 
-      const textEncoder = new TextEncoderStream();
-      const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
-      const writer = textEncoder.writable.getWriter();
+      const writer = port.writable.getWriter();
+      portRef.current = port;
+      writerRef.current = writer;
       portRef.current = port;
       writerRef.current = writer;
 
-      const data = {
-        command: "addAnimation",
-        arguments: [serializeAnimation()]
-      };
+      const commandBytes = new TextEncoder().encode("addAnimation");
+      const titleBytes = new TextEncoder().encode(title);
+      const animationBytes = serializeToBytes(getFramesDifference(frames));
 
-      const json = JSON.stringify(data);
+      if (titleBytes.length > 255) throw new Error("Title too long");
 
-      await writerRef.current.write(json + "\n");
+      const animationLength = animationBytes.length;
+      if (animationLength > 0xffff) throw new Error("Animation too long");
+
+      const argLength = 1 + titleBytes.length + animationLength;
+      if (argLength > 8096) throw new Error("Arguments too large");
+
+      const totalLength = 1 + commandBytes.length + 2 + argLength;
+      const fullMessage = new Uint8Array(totalLength);
+
+      // Write command
+      let offset = 0;
+      fullMessage[offset++] = commandBytes.length;
+      fullMessage.set(commandBytes, offset);
+      offset += commandBytes.length;
+
+      console.log("Commandbytes: ", commandBytes);
+
+      // Write argLength (2 bytes)
+      fullMessage[offset++] = (argLength >> 8) & 0xff; // High byte
+      fullMessage[offset++] = argLength & 0xff;        // Low byte
+
+      console.log(argLength);
+
+      // Write title
+      fullMessage[offset++] = titleBytes.length;
+      fullMessage.set(titleBytes, offset);
+      offset += titleBytes.length;
+
+      // Write animation data
+      fullMessage.set(animationBytes, offset);
+
+      console.log(fullMessage);
+
+      await writer.write(fullMessage);
 
       await writer.close();
-      await writableStreamClosed.catch(() => { });
 
       await port.close();
     } catch (err) {
       console.error("Connection error: ", err);
     }
+  }
+
+  function serializeToBytes(diffs: { pixels: Pixel[] }[]): Uint8Array {
+    const byteArray: number[] = []
+
+    byteArray.push(diffs.length & 0xff);
+
+    for (const frame of diffs) {
+      const pixelCount = frame.pixels.length;
+
+      byteArray.push((pixelCount >> 8) & 0xff, pixelCount & 0xff);
+
+      for (const pixel of frame.pixels) {
+        const coords = (((pixel.x & 0x0f) << 4) | (pixel.y & 0x0f));
+        byteArray.push(coords);
+        byteArray.push(pixel.color.r & 0xff);
+        byteArray.push(pixel.color.g & 0xff);
+        byteArray.push(pixel.color.b & 0xff);
+      }
+    }
+
+    return new Uint8Array(byteArray);
   }
 
   async function getAnimationsNames() {
@@ -205,7 +258,7 @@ function AnimationCreator() {
   function serializeAnimation() {
     return JSON.stringify({
       name: title,
-      frames: getFramesDifference(frames)
+      frames: serializeToBytes(getFramesDifference(frames))
     });
   }
 
@@ -320,6 +373,8 @@ function AnimationCreator() {
     return diffs;
   }
 
+
+
   function exportJson() {
     setHasTitleError(title.length === 0);
     if (hasTitleError) return;
@@ -391,7 +446,7 @@ function AnimationCreator() {
           }
         }
       }
-      
+
       const animationObj = JSON.parse(finalData);
       importJson(animationObj.name, animationObj.frames);
 
