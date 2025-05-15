@@ -49,13 +49,15 @@ function AnimationCreator() {
   const [copiedFrame, setCopiedFrame] = useState<Frame | null>(null);
   const [title, setTitle] = useState("");
   const [hasTitleError, setHasTitleError] = useState(false);
-  const [importedAnimationNames, setImportedAnimationsNames] = useState<string[]>([]);
+  const [importedAnimationNames, setImportedAnimationsNames] = useState<
+    string[]
+  >([]);
   const [isAnimationModalOpen, setIsAnimationModalOpen] = useState(false);
 
   async function exportToEsp() {
     setHasTitleError(title.length === 0);
-    if (hasTitleError) return;
-
+    if (title.length === 0) return;
+    const CHUNK_SIZE = 256;
     try {
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
@@ -76,36 +78,37 @@ function AnimationCreator() {
       if (animationLength > 0xffff) throw new Error("Animation too long");
 
       const argLength = 1 + titleBytes.length + animationLength;
-      if (argLength > 8096) throw new Error("Arguments too large");
 
-      const totalLength = 1 + commandBytes.length + 2 + argLength;
-      const fullMessage = new Uint8Array(totalLength);
+      const totalLength = 1 + commandBytes.length + argLength;
+      const messageWithoutLength = new Uint8Array(totalLength);
 
       // Write command
       let offset = 0;
-      fullMessage[offset++] = commandBytes.length;
-      fullMessage.set(commandBytes, offset);
+      messageWithoutLength[offset++] = commandBytes.length;
+      messageWithoutLength.set(commandBytes, offset);
       offset += commandBytes.length;
 
-      console.log("Commandbytes: ", commandBytes);
-
-      // Write argLength (2 bytes)
-      fullMessage[offset++] = (argLength >> 8) & 0xff; // High byte
-      fullMessage[offset++] = argLength & 0xff;        // Low byte
-
-      console.log(argLength);
-
       // Write title
-      fullMessage[offset++] = titleBytes.length;
-      fullMessage.set(titleBytes, offset);
+      messageWithoutLength[offset++] = titleBytes.length;
+      messageWithoutLength.set(titleBytes, offset);
       offset += titleBytes.length;
 
       // Write animation data
-      fullMessage.set(animationBytes, offset);
+      messageWithoutLength.set(animationBytes, offset);
 
-      console.log(fullMessage);
+      const totalSize = messageWithoutLength.length;
+      console.log("Total size: ", totalSize);
+      const finalMessage = new Uint8Array(totalSize + 2);
+      finalMessage[0] = (totalSize >> 8) & 0xff;
+      finalMessage[1] = totalSize & 0xff;
+      finalMessage.set(messageWithoutLength, 2);
 
-      await writer.write(fullMessage);
+      for (let i = 0; i < finalMessage.length; i += CHUNK_SIZE) {
+        const chunk = finalMessage.slice(i, i + CHUNK_SIZE);
+        console.log("Chunk", chunk);
+        await writer.write(chunk);
+        await new Promise((r) => setTimeout(r, 10)); // small delay to prevent overflow
+      }
 
       await writer.close();
 
@@ -116,7 +119,7 @@ function AnimationCreator() {
   }
 
   function serializeToBytes(diffs: { pixels: Pixel[] }[]): Uint8Array {
-    const byteArray: number[] = []
+    const byteArray: number[] = [];
 
     byteArray.push(diffs.length & 0xff);
 
@@ -126,7 +129,7 @@ function AnimationCreator() {
       byteArray.push((pixelCount >> 8) & 0xff, pixelCount & 0xff);
 
       for (const pixel of frame.pixels) {
-        const coords = (((pixel.x & 0x0f) << 4) | (pixel.y & 0x0f));
+        const coords = ((pixel.x & 0x0f) << 4) | (pixel.y & 0x0f);
         byteArray.push(coords);
         byteArray.push(pixel.color.r & 0xff);
         byteArray.push(pixel.color.g & 0xff);
@@ -150,7 +153,7 @@ function AnimationCreator() {
 
       const data = {
         command: "getAnimationsNames",
-        arguments: []
+        arguments: [],
       };
 
       const json = JSON.stringify(data);
@@ -177,15 +180,20 @@ function AnimationCreator() {
         // Check for START
         if (receivedData.includes("<<START>>")) {
           isCapturing = true;
-          receivedData = receivedData.substring(receivedData.indexOf("<<START>>") + 9); // skip the marker
+          receivedData = receivedData.substring(
+            receivedData.indexOf("<<START>>") + 9
+          ); // skip the marker
         }
 
         // Capture data
         if (isCapturing) {
           // If END is reached, stop capturing
           if (receivedData.includes("<<END>>")) {
-            finalData = receivedData.substring(0, receivedData.indexOf("<<END>>"));
-            reader.cancel()
+            finalData = receivedData.substring(
+              0,
+              receivedData.indexOf("<<END>>")
+            );
+            reader.cancel();
             break;
           }
         }
@@ -195,10 +203,10 @@ function AnimationCreator() {
       setImportedAnimationsNames(JSON.parse(finalData));
 
       await writer.close();
-      await writableStreamClosed.catch(() => { });
+      await writableStreamClosed.catch(() => {});
 
       await reader.releaseLock();
-      await readableStreamClosed.catch(() => { }); // wait for pipeTo to close
+      await readableStreamClosed.catch(() => {}); // wait for pipeTo to close
 
       await port.close();
     } catch (err) {
@@ -258,12 +266,12 @@ function AnimationCreator() {
   function serializeAnimation() {
     return JSON.stringify({
       name: title,
-      frames: serializeToBytes(getFramesDifference(frames))
+      frames: serializeToBytes(getFramesDifference(frames)),
     });
   }
 
   function handleCopy() {
-    setCopiedFrame(frames[currentFrameIndex])
+    setCopiedFrame(frames[currentFrameIndex]);
   }
 
   function handlePaste() {
@@ -299,7 +307,6 @@ function AnimationCreator() {
       });
     });
   }
-
 
   function importJson(title: string, data: RawFrame[]) {
     setTitle(title);
@@ -341,11 +348,12 @@ function AnimationCreator() {
 
     const filteredBasePixels: Pixel[] = frames[0].pixels
       .flat()
-      .filter(pixel =>
-        !(pixel.color.r === 0 && pixel.color.g === 0 && pixel.color.b === 0)
+      .filter(
+        (pixel) =>
+          !(pixel.color.r === 0 && pixel.color.g === 0 && pixel.color.b === 0)
       );
 
-    const baseFrame = { ...frames[0], pixels: filteredBasePixels }
+    const baseFrame = { ...frames[0], pixels: filteredBasePixels };
 
     const diffs: any[] = [baseFrame];
 
@@ -372,8 +380,6 @@ function AnimationCreator() {
 
     return diffs;
   }
-
-
 
   function exportJson() {
     setHasTitleError(title.length === 0);
@@ -406,7 +412,7 @@ function AnimationCreator() {
 
       const data = {
         command: "getAnimation",
-        arguments: [name]
+        arguments: [name],
       };
 
       const json = JSON.stringify(data);
@@ -433,15 +439,20 @@ function AnimationCreator() {
         // Check for START
         if (receivedData.includes("<<START>>")) {
           isCapturing = true;
-          receivedData = receivedData.substring(receivedData.indexOf("<<START>>") + 9); // skip the marker
+          receivedData = receivedData.substring(
+            receivedData.indexOf("<<START>>") + 9
+          ); // skip the marker
         }
 
         // Capture data
         if (isCapturing) {
           // If END is reached, stop capturing
           if (receivedData.includes("<<END>>")) {
-            finalData = receivedData.substring(0, receivedData.indexOf("<<END>>"));
-            reader.cancel()
+            finalData = receivedData.substring(
+              0,
+              receivedData.indexOf("<<END>>")
+            );
+            reader.cancel();
             break;
           }
         }
@@ -451,10 +462,10 @@ function AnimationCreator() {
       importJson(animationObj.name, animationObj.frames);
 
       await writer.close();
-      await writableStreamClosed.catch(() => { });
+      await writableStreamClosed.catch(() => {});
 
       await reader.releaseLock();
-      await readableStreamClosed.catch(() => { }); // wait for pipeTo to close
+      await readableStreamClosed.catch(() => {}); // wait for pipeTo to close
 
       await port.close();
     } catch (err) {
@@ -530,7 +541,11 @@ function AnimationCreator() {
           />
         )}
         <div>
-          <TitleBar title={title} setTitle={handleTitleChange} hasError={hasTitleError} />
+          <TitleBar
+            title={title}
+            setTitle={handleTitleChange}
+            hasError={hasTitleError}
+          />
           {frames.length > 0 && (
             <PixelMatrix
               pixels={frames[currentFrameIndex].pixels}
@@ -539,7 +554,6 @@ function AnimationCreator() {
             />
           )}
         </div>
-
       </div>
       <div className="overflow-y-auto">
         {frames.length > 0 && (
