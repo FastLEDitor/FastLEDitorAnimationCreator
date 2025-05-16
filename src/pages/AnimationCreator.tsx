@@ -266,7 +266,7 @@ function AnimationCreator() {
   function serializeAnimation() {
     return JSON.stringify({
       name: title,
-      frames: serializeToBytes(getFramesDifference(frames)),
+      frames: getFramesDifference(frames),
     });
   }
 
