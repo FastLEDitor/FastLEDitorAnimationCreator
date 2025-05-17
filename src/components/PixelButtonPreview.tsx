@@ -1,4 +1,3 @@
-import React from "react";
 import { Color } from "../pages/AnimationCreator";
 
 interface PixelButtonPreviewProps {

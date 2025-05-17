@@ -1,4 +1,3 @@
-import React from "react";
 import PixelButtonPreview from "./PixelButtonPreview";
 import "../App.css"
 import { Frame } from "../pages/AnimationCreator";

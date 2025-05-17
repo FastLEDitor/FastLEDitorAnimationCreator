@@ -1,5 +1,3 @@
-import React from "react";
-
 interface ModalProps {
   options: string[];
   onSelect: (selected: string) => void;

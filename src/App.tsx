@@ -1,4 +1,3 @@
-import React from "react";
 import AnimationCreator from "./pages/AnimationCreator";
 import './App.css'
 
