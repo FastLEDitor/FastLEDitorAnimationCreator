@@ -27,6 +27,7 @@ export type RawFrame = {
 };
 
 function AnimationCreator() {
+  const CHUNK_SIZE = 256;
   const portRef = useRef<SerialPort | null>(null);
   const writerRef = useRef<WritableStreamDefaultWriter | null>(null);
   const [selectedColor, setSelectedColor] = useState<Color>({
@@ -49,34 +50,68 @@ function AnimationCreator() {
   const [copiedFrame, setCopiedFrame] = useState<Frame | null>(null);
   const [title, setTitle] = useState("");
   const [hasTitleError, setHasTitleError] = useState(false);
-  const [importedAnimationNames, setImportedAnimationsNames] = useState<string[]>([]);
+  const [importedAnimationNames, setImportedAnimationsNames] = useState<
+    string[]
+  >([]);
   const [isAnimationModalOpen, setIsAnimationModalOpen] = useState(false);
 
   async function exportToEsp() {
     setHasTitleError(title.length === 0);
-    if (hasTitleError) return;
+    if (title.length === 0) return;
 
     try {
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
 
-      const textEncoder = new TextEncoderStream();
-      const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
-      const writer = textEncoder.writable.getWriter();
+      const writer = port.writable.getWriter();
+      portRef.current = port;
+      writerRef.current = writer;
       portRef.current = port;
       writerRef.current = writer;
 
-      const data = {
-        command: "addAnimation",
-        arguments: [serializeAnimation()]
-      };
+      const commandBytes = new TextEncoder().encode("addAnimation");
+      const titleBytes = new TextEncoder().encode(title);
+      const animationBytes = serializeToBytes(getFramesDifference(frames));
 
-      const json = JSON.stringify(data);
+      if (titleBytes.length > 255) throw new Error("Title too long");
 
-      await writerRef.current.write(json + "\n");
+      const animationLength = animationBytes.length;
+      if (animationLength > 0xffff) throw new Error("Animation too long");
+
+      const argLength = 1 + titleBytes.length + animationLength;
+
+      const totalLength = 1 + commandBytes.length + argLength;
+      const messageWithoutLength = new Uint8Array(totalLength);
+
+      // Write command
+      let offset = 0;
+      messageWithoutLength[offset++] = commandBytes.length;
+      messageWithoutLength.set(commandBytes, offset);
+      offset += commandBytes.length;
+
+      // Write title
+      messageWithoutLength[offset++] = titleBytes.length;
+      messageWithoutLength.set(titleBytes, offset);
+      offset += titleBytes.length;
+
+      // Write animation data
+      messageWithoutLength.set(animationBytes, offset);
+
+      const totalSize = messageWithoutLength.length;
+
+      const finalMessage = new Uint8Array(totalSize + 2);
+      finalMessage[0] = (totalSize >> 8) & 0xff;
+      finalMessage[1] = totalSize & 0xff;
+      finalMessage.set(messageWithoutLength, 2);
+
+
+      for (let i = 0; i < finalMessage.length; i += CHUNK_SIZE) {
+        const chunk = finalMessage.slice(i, i + CHUNK_SIZE);
+        await writer.write(chunk);
+        await new Promise((r) => setTimeout(r, 10)); // small delay to prevent overflow
+      }
 
       await writer.close();
-      await writableStreamClosed.catch(() => { });
 
       await port.close();
     } catch (err) {
@@ -84,70 +119,139 @@ function AnimationCreator() {
     }
   }
 
+  function serializeToBytes(diffs: { pixels: Pixel[] }[]): Uint8Array {
+    const byteArray: number[] = [];
+
+    byteArray.push(diffs.length & 0xff);
+
+    for (const frame of diffs) {
+      const pixelCount = frame.pixels.length;
+
+      byteArray.push((pixelCount >> 8) & 0xff, pixelCount & 0xff);
+
+      for (const pixel of frame.pixels) {
+        const coords = ((pixel.x & 0x0f) << 4) | (pixel.y & 0x0f);
+        byteArray.push(coords);
+        byteArray.push(pixel.color.r & 0xff);
+        byteArray.push(pixel.color.g & 0xff);
+        byteArray.push(pixel.color.b & 0xff);
+      }
+    }
+
+    return new Uint8Array(byteArray);
+  }
+
   async function getAnimationsNames() {
     try {
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
 
-      const textEncoder = new TextEncoderStream();
-      const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
-      const writer = textEncoder.writable.getWriter();
+      const writer = port.writable.getWriter();
+      portRef.current = port;
+      writerRef.current = writer;
       portRef.current = port;
       writerRef.current = writer;
 
-      const data = {
-        command: "getAnimationsNames",
-        arguments: []
-      };
+      const commandBytes = new TextEncoder().encode("getAnimationsNames");
 
-      const json = JSON.stringify(data);
+      const totalLength = 1 + commandBytes.length;
+      const messageWithoutLength = new Uint8Array(totalLength);
 
-      await writerRef.current.write(json + "\n");
+      // Write command
+      let offset = 0;
+      messageWithoutLength[offset++] = commandBytes.length;
+      messageWithoutLength.set(commandBytes, offset);
+      offset += commandBytes.length;
 
-      const textDecoder = new TextDecoderStream();
-      const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
-      const reader = textDecoder.readable.getReader();
+      const totalSize = messageWithoutLength.length;
 
-      let receivedData = "";
-      let isCapturing = false;
-      let finalData = "";
+      const finalMessage = new Uint8Array(totalSize + 2);
+      finalMessage[0] = (totalSize >> 8) & 0xff;
+      finalMessage[1] = totalSize & 0xff;
+      finalMessage.set(messageWithoutLength, 2);
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) {
-          reader.releaseLock();
-          break;
-        }
+      for (let i = 0; i < finalMessage.length; i += CHUNK_SIZE) {
+        const chunk = finalMessage.slice(i, i + CHUNK_SIZE);
 
-        receivedData += value;
+        await writer.write(chunk);
+        await new Promise((r) => setTimeout(r, 10)); // small delay to prevent overflow
+      }
 
-        // Check for START
-        if (receivedData.includes("<<START>>")) {
-          isCapturing = true;
-          receivedData = receivedData.substring(receivedData.indexOf("<<START>>") + 9); // skip the marker
-        }
+      const reader = port.readable.getReader();
+      let buffer: number[] = [];
+      let started = false;
+      let messageComplete = false;
+      let payload: Uint8Array | null = null;
 
-        // Capture data
-        if (isCapturing) {
-          // If END is reached, stop capturing
-          if (receivedData.includes("<<END>>")) {
-            finalData = receivedData.substring(0, receivedData.indexOf("<<END>>"));
-            reader.cancel()
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+
+          for (let byte of value) {
+            if (!started) {
+              if (byte === 0x7E) {
+                started = true;
+                buffer = [];
+              }
+              continue;
+            }
+
+            if (byte === 0x7F) {
+              const data = new Uint8Array(buffer);
+
+              if (data.length < 2) {
+                console.error("Data too short for length");
+                started = false;
+                continue;
+              }
+
+              const declaredLength = ((data[0] << 8) | data[1]) - 2;
+              payload = data.slice(2, declaredLength + 2);
+
+              if (payload.length !== declaredLength) {
+                console.error(`Length mismatch: expected ${declaredLength}, got ${payload.length}`);
+                started = false;
+                continue;
+              }
+              messageComplete = true;
+              break;
+            }
+
+            buffer.push(byte);
+          }
+
+          if (messageComplete) {
+            await reader.cancel();
             break;
           }
         }
+      } finally {
+        await reader.releaseLock();
+        await writer.close();
+        await port.close();
       }
 
-      console.log("Received data: " + receivedData);
-      setImportedAnimationsNames(JSON.parse(finalData));
+      const decoder = new TextDecoder();
+      if (payload === null) {
+        console.error("Failed to get payload from ESP32");
+        return;
+      }
+      const titles: string[] = [];
+      for (let i = 0; i < payload.length;) {
+        let length = payload[i];
+        i += 1;
+        const toDecode = payload.slice(i, i + length);
+        for (let j = 0; j < length; j++) {
+          toDecode[j] = payload[i + j];
+        }
+        titles.push(decoder.decode(toDecode));
+        i += length;
+      }
 
-      await writer.close();
-      await writableStreamClosed.catch(() => { });
+      setImportedAnimationsNames(titles);
 
-      await reader.releaseLock();
-      await readableStreamClosed.catch(() => { }); // wait for pipeTo to close
-
-      await port.close();
     } catch (err) {
       console.error("Connection error: ", err);
     }
@@ -205,12 +309,12 @@ function AnimationCreator() {
   function serializeAnimation() {
     return JSON.stringify({
       name: title,
-      frames: getFramesDifference(frames)
+      frames: getFramesDifference(frames),
     });
   }
 
   function handleCopy() {
-    setCopiedFrame(frames[currentFrameIndex])
+    setCopiedFrame(frames[currentFrameIndex]);
   }
 
   function handlePaste() {
@@ -246,7 +350,6 @@ function AnimationCreator() {
       });
     });
   }
-
 
   function importJson(title: string, data: RawFrame[]) {
     setTitle(title);
@@ -288,11 +391,12 @@ function AnimationCreator() {
 
     const filteredBasePixels: Pixel[] = frames[0].pixels
       .flat()
-      .filter(pixel =>
-        !(pixel.color.r === 0 && pixel.color.g === 0 && pixel.color.b === 0)
+      .filter(
+        (pixel) =>
+          !(pixel.color.r === 0 && pixel.color.g === 0 && pixel.color.b === 0)
       );
 
-    const baseFrame = { ...frames[0], pixels: filteredBasePixels }
+    const baseFrame = { ...frames[0], pixels: filteredBasePixels };
 
     const diffs: any[] = [baseFrame];
 
@@ -351,7 +455,7 @@ function AnimationCreator() {
 
       const data = {
         command: "getAnimation",
-        arguments: [name]
+        arguments: [name],
       };
 
       const json = JSON.stringify(data);
@@ -378,20 +482,25 @@ function AnimationCreator() {
         // Check for START
         if (receivedData.includes("<<START>>")) {
           isCapturing = true;
-          receivedData = receivedData.substring(receivedData.indexOf("<<START>>") + 9); // skip the marker
+          receivedData = receivedData.substring(
+            receivedData.indexOf("<<START>>") + 9
+          ); // skip the marker
         }
 
         // Capture data
         if (isCapturing) {
           // If END is reached, stop capturing
           if (receivedData.includes("<<END>>")) {
-            finalData = receivedData.substring(0, receivedData.indexOf("<<END>>"));
-            reader.cancel()
+            finalData = receivedData.substring(
+              0,
+              receivedData.indexOf("<<END>>")
+            );
+            reader.cancel();
             break;
           }
         }
       }
-      
+
       const animationObj = JSON.parse(finalData);
       importJson(animationObj.name, animationObj.frames);
 
@@ -475,7 +584,11 @@ function AnimationCreator() {
           />
         )}
         <div>
-          <TitleBar title={title} setTitle={handleTitleChange} hasError={hasTitleError} />
+          <TitleBar
+            title={title}
+            setTitle={handleTitleChange}
+            hasError={hasTitleError}
+          />
           {frames.length > 0 && (
             <PixelMatrix
               pixels={frames[currentFrameIndex].pixels}
@@ -484,7 +597,6 @@ function AnimationCreator() {
             />
           )}
         </div>
-
       </div>
       <div className="overflow-y-auto">
         {frames.length > 0 && (
