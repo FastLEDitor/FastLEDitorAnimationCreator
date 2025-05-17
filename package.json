@@ -3,9 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "homepage": "https://fastleditor.github.io/fastleditoranimationcreator",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d build",
     "lint": "eslint .",
     "preview": "vite preview",
     "storybook": "storybook dev -p 6006",
@@ -14,6 +17,7 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.0.17",
     "esp-web-tools": "^10.1.0",
+    "gh-pages": "^6.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-scrollbar": "^4.0.1",
